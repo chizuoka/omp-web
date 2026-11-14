@@ -162,6 +162,7 @@ Requests to loopback addresses are never proxied, so a local provider (Ollama, L
 - **Try different directions safely**: continue from an earlier message or fork a session into a separate route.
 - **Work across branches**: switch Git worktrees from the sidebar so new sessions and the Explorer follow the checkout you choose.
 - **Chat beside the project**: browse files on the left and preview source, docs, images, audio, and PDFs on the right while the agent works.
+- **Jump through a long session**: the rail beside the transcript shows one dot per turn; hover it for the full prompt history with each answer's outline, and click any entry to jump straight there.
 - **See session state clearly**: context usage, cost, compaction state, and system prompt details are visible from the top bar.
 - **Configure less from the terminal**: manage providers, logins/API keys, model tests, plugins, and skill switches from the web UI.
 - **Use the interface in your language**: switch between the supported UI languages from the top bar.
@@ -318,6 +319,7 @@ components/
   FileExplorer.tsx    # file tree
   FileViewer.tsx      # source, diff, image, audio, PDF, DOCX preview
 lib/
+  chat-turns.ts        # transcript turns (prompt + answer) for the minimap rail
   directory-browser.ts # directory normalization and safe listing helpers
   http-dispatcher.ts  # HTTP(S) proxy setup for server-side fetch
   model-roles.ts      # omp's model roles, read and written for the browser

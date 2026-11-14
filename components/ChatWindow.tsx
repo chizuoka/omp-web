@@ -21,6 +21,7 @@ import { countToolCallBlocks, getAssistantErrorMessage, getDisplayableAssistantB
 import { extractTurnWrittenFiles, type WrittenFile } from "@/lib/turn-written-files";
 import { MessageView } from "./MessageView";
 import { MarkdownBody } from "./MarkdownBody";
+import { ChatMinimap } from "./ChatMinimap";
 import { ChatInput, type ChatInputHandle } from "./ChatInput";
 import { ExtensionStatusBar } from "./ExtensionStatusBar";
 import { OmpWordmark } from "./OmpWordmark";
@@ -37,6 +38,8 @@ import {
   restoreScrollTop,
   VISIBLE_PAGE_SIZE,
 } from "@/lib/chat-lazy-load";
+import { buildChatTurns, useTurnRefs } from "@/lib/chat-turns";
+import { useIsMobile } from "@/hooks/useIsMobile";
 
 interface Props {
   session: SessionInfo | null;
@@ -76,6 +79,11 @@ function phaseLabel(phase: AgentPhase, t: (key: string, params?: Record<string, 
 }
 
 const CHAT_COLUMN_PADDING = 16;
+// The minimap rail's width; the composer keeps its right edge clear of it.
+const CHAT_MINIMAP_WIDTH = 36;
+
+/** Which part of a turn a rendered message carries the minimap's node for. */
+type TurnRefKind = "prompt" | "answer";
 
 function hasFinalAssistantAnswer(message: AgentMessage, options: DisplayOptions): boolean {
   if (message.role !== "assistant") return false;
@@ -193,6 +201,7 @@ function ProcessDetailsGroup({ messageCount, toolCallCount, defaultExpanded = fa
 
 export function ChatWindow({ session, newSessionCwd, onAgentEnd, onAttentionNeeded, onSessionCreated, onSessionForked, modelsRefreshKey, chatInputRef, onBranchDataChange, onSystemPromptChange, onSessionStatsChange, onSessionStatsPanelOpen, onContextUsageChange, onSubagentsChange, onOpenFile, soundEnabled = true, onSoundToggle, playDoneSound = () => {}, unlockAudio }: Props) {
   const { t } = useI18n();
+  const isMobile = useIsMobile();
 
   // Wrap onAgentEnd to play the completion sound. This is more reliable than
   // wrapping handleAgentEventRef because useAgentSession overwrites that ref
@@ -291,6 +300,30 @@ export function ChatWindow({ session, newSessionCwd, onAgentEnd, onAttentionNeed
     container.scrollTop = restoreScrollTop(container.scrollHeight, prevScrollDistanceRef.current);
     prevScrollDistanceRef.current = null;
   }, [visibleCount, scrollContainerRef]);
+
+  // --- Prompt history browser ---
+  // The transcript's turns drive the minimap rail: one node per turn, and a
+  // hover panel that lists every prompt with the answer's outline.
+  const chatTurns = useMemo(
+    () => buildChatTurns(messages, displayOptions),
+    [messages, displayOptions],
+  );
+  const turnRefs = useTurnRefs(chatTurns.length);
+  const answerRefs = useTurnRefs(chatTurns.length);
+  // The minimap reads the transcript's scroll container as a plain element:
+  // it scrolls it, and a ref's value would change without a re-render.
+  const [scrollContainerEl, setScrollContainerEl] = useState<HTMLDivElement | null>(null);
+  // A stable callback: an inline one would detach and re-attach on every
+  // render, and the state update would loop.
+  const attachScrollContainer = useCallback((element: HTMLDivElement | null) => {
+    scrollContainerRef.current = element;
+    setScrollContainerEl(element);
+  }, [scrollContainerRef]);
+  // The minimap can point at a turn the transcript has folded away: reveal
+  // everything that is still hidden so the turn has a position to scroll to.
+  const revealHistoryForMinimap = useCallback(() => {
+    setVisibleCount((current) => Math.max(current, messages.length * 2));
+  }, [messages.length]);
   // Push session stats up to AppShell for the top bar.
   // Compare scalar fields to avoid loops from new object identity each render.
   const statsKey = sessionStats
@@ -424,6 +457,7 @@ export function ChatWindow({ session, newSessionCwd, onAgentEnd, onAttentionNeed
       onAudioUnlock={unlockAudio}
       draftKey={session?.id ?? (newSessionCwd ? `new:${newSessionCwd}` : undefined)}
       cwd={session?.cwd ?? newSessionCwd}
+      rightInset={isMobile || isEmptyNew ? undefined : CHAT_MINIMAP_WIDTH}
     />
   );
 
@@ -540,7 +574,7 @@ export function ChatWindow({ session, newSessionCwd, onAgentEnd, onAttentionNeed
             position: "absolute",
             top: 12,
             left: 0,
-            right: 0,
+            right: isMobile ? 0 : CHAT_MINIMAP_WIDTH,
             zIndex: 40,
             padding: `0 ${CHAT_COLUMN_PADDING}px`,
             pointerEvents: "none",
@@ -550,7 +584,7 @@ export function ChatWindow({ session, newSessionCwd, onAgentEnd, onAttentionNeed
             <NoticeShelf notices={notices} floating align="right" />
           </div>
         </div>
-        <div ref={scrollContainerRef} className="chat-session-scroll min-w-0 flex-1 overflow-x-hidden overflow-y-auto pt-4 [scrollbar-width:none]">
+        <div ref={attachScrollContainer} className="chat-session-scroll min-w-0 flex-1 overflow-x-hidden overflow-y-auto pt-4 [scrollbar-width:none]">
           <div style={{ minWidth: 0, padding: `0 ${CHAT_COLUMN_PADDING}px` }}>
             <div style={{ width: "100%", minWidth: 0, maxWidth: 820, margin: "0 auto" }}>
               <ExtensionWidgets widgets={aboveEditorWidgets} />
@@ -563,7 +597,15 @@ export function ChatWindow({ session, newSessionCwd, onAgentEnd, onAttentionNeed
                 if (isGroupAnchor(messages[i])) { lastAnchorIdx = i; break; }
               }
 
-              const renderMessage = (idx: number, options: { keyPrefix?: string; messageOverride?: AgentMessage; showTimestamp?: boolean; writtenFiles?: WrittenFile[] } = {}): ReactNode => {
+              // The minimap indexes the transcript's turns, not its messages:
+              // each turn's prompt and answer carry the turn's number.
+              const turnIndexByAnchor = new Map<number, number>();
+              for (const turn of chatTurns) {
+                turnIndexByAnchor.set(turn.anchorIndex, turn.index);
+                if (turn.answerIndex >= 0) turnIndexByAnchor.set(turn.answerIndex, turn.index);
+              }
+
+              const renderMessage = (idx: number, options: { keyPrefix?: string; messageOverride?: AgentMessage; showTimestamp?: boolean; writtenFiles?: WrittenFile[]; turnRef?: TurnRefKind } = {}): ReactNode => {
                 const msg = options.messageOverride ?? messages[idx];
                 const prevAssistantEntryId =
                   msg.role === "user" && idx > 0 && messages[idx - 1].role === "assistant"
@@ -584,7 +626,7 @@ export function ChatWindow({ session, newSessionCwd, onAgentEnd, onAttentionNeed
                   }
                 }
                 if (options.showTimestamp !== undefined) showTimestamp = options.showTimestamp;
-                return (
+                const view = (
                   <MessageView
                     key={`${keyPrefix}-view-${idx}`}
                     message={msg}
@@ -603,6 +645,17 @@ export function ChatWindow({ session, newSessionCwd, onAgentEnd, onAttentionNeed
                     sessionId={session?.id ?? sessionIdRef.current ?? undefined}
                     writtenFiles={options.writtenFiles}
                   />
+                );
+                if (!options.turnRef) return view;
+                // The minimap measures the prompt and the answer of every turn,
+                // so they need a node of their own to read a position from.
+                const turnIndex = turnIndexByAnchor.get(idx);
+                if (turnIndex === undefined) return view;
+                const refs = options.turnRef === "prompt" ? turnRefs : answerRefs;
+                return (
+                  <div key={`${keyPrefix}-turn-${idx}`} ref={(element) => { refs.current[turnIndex] = element; }}>
+                    {view}
+                  </div>
                 );
               };
 
@@ -623,7 +676,7 @@ export function ChatWindow({ session, newSessionCwd, onAgentEnd, onAttentionNeed
 
                 if (finalAssistantIdx === -1) {
                   for (let renderIdx = userIdx; renderIdx < endIdx; renderIdx++) {
-                    rendered.push(renderMessage(renderIdx));
+                    rendered.push(renderMessage(renderIdx, { turnRef: renderIdx === userIdx ? "prompt" : undefined }));
                   }
                   idx = endIdx;
                   continue;
@@ -632,13 +685,13 @@ export function ChatWindow({ session, newSessionCwd, onAgentEnd, onAttentionNeed
                 const isLiveTail = (sessionBusy || streamState.isStreaming) && endIdx === messages.length && userIdx === lastAnchorIdx;
                 if (isLiveTail) {
                   for (let renderIdx = userIdx; renderIdx < endIdx; renderIdx++) {
-                    rendered.push(renderMessage(renderIdx));
+                    rendered.push(renderMessage(renderIdx, { turnRef: renderIdx === userIdx ? "prompt" : undefined }));
                   }
                   idx = endIdx;
                   continue;
                 }
 
-                rendered.push(renderMessage(userIdx));
+                rendered.push(renderMessage(userIdx, { turnRef: "prompt" }));
 
                 const processIndices: number[] = [];
                 for (let processIdx = userIdx + 1; processIdx < finalAssistantIdx; processIdx++) {
@@ -687,7 +740,7 @@ export function ChatWindow({ session, newSessionCwd, onAgentEnd, onAttentionNeed
                     }
                   }
                   const writtenFiles = extractTurnWrittenFiles(turnContent, toolResultsMap, messageCwd);
-                  rendered.push(renderMessage(finalAssistantIdx, { messageOverride: finalAnswerMessage, writtenFiles }));
+                  rendered.push(renderMessage(finalAssistantIdx, { messageOverride: finalAnswerMessage, writtenFiles, turnRef: "answer" }));
                 }
                 for (let renderIdx = finalAssistantIdx + 1; renderIdx < endIdx; renderIdx++) {
                   rendered.push(renderMessage(renderIdx));
@@ -739,6 +792,15 @@ export function ChatWindow({ session, newSessionCwd, onAgentEnd, onAttentionNeed
             </div>
           </div>
         </div>
+        {isMobile ? null : (
+          <ChatMinimap
+            turns={chatTurns}
+            scrollContainer={scrollContainerEl}
+            turnRefs={turnRefs}
+            answerRefs={answerRefs}
+            onRevealHistory={revealHistoryForMinimap}
+          />
+        )}
         {sessionBusy && autoFollowPaused && (
           <button
             type="button"

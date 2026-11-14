@@ -99,6 +99,7 @@ lib/
   draft-store.ts       local draft persistence helpers
   file-access.ts       allowed file roots for /api/files and worktrees
   file-paths.ts        client/server path encoding helpers
+  chat-turns.ts        transcript turns (prompt + answer) for the minimap rail
   markdown.ts          shared markdown helpers
   model-roles.ts       omp's model roles, read/written for the browser
   model-scope.ts       enabledModels resolution shared by UI and startup

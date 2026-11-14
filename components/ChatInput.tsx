@@ -88,6 +88,9 @@ interface Props {
   draftKey?: string;
   /** Session working directory — enables the @ file autocomplete menu */
   cwd?: string | null;
+  /** Width of the minimap rail beside the transcript; the composer keeps its
+   *  right edge clear of it. */
+  rightInset?: number;
   contextUsage?: ContextUsage | null;
 }
 
@@ -391,6 +394,7 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
   onPromptWithStreamingBehavior,
   draftKey,
   cwd,
+  rightInset,
   contextUsage,
 }: Props, ref) {
   const { t } = useI18n();
@@ -1346,6 +1350,7 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
         flexShrink: 0,
         background: "transparent",
         padding: "0 16px 8px",
+        paddingRight: rightInset ? 16 + rightInset : undefined,
       }}
     >
       {/* Hidden file input */}
