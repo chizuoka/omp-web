@@ -1,0 +1,69 @@
+name: Sync upstream
+
+# Keeps this fork's main in step with the upstream repository. Upstream
+# releases land on its own main, so a merge from it is what carries them
+# across. The merge goes through a pull request so CI (typecheck and build)
+# runs before it lands, and a conflict stops here instead of half-applying.
+on:
+  schedule:
+    - cron: "23 * * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pull-requests: write
+
+concurrency:
+  group: sync-upstream
+  cancel-in-progress: false
+
+jobs:
+  sync:
+    name: Open an upstream sync pull request
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out main
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Add upstream remote
+        run: git remote add upstream https://github.com/ddallabenetta/omp-web.git
+
+      - name: Fetch upstream
+        run: git fetch upstream main
+
+      - name: Skip when upstream is already merged
+        id: check
+        shell: bash
+        run: |
+          if git merge-base --is-ancestor upstream/main HEAD; then
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Merge upstream main
+        if: steps.check.outputs.changed == 'true'
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git merge --no-edit upstream/main
+
+      - name: Open the pull request
+        if: steps.check.outputs.changed == 'true'
+        uses: peter-evans/create-pull-request@v7
+        with:
+          token: ${{ github.token }}
+          branch: automation/sync-upstream
+          delete-branch: true
+          commit-message: "chore: sync upstream main"
+          title: "chore: sync upstream main"
+          body: |
+            Merges `ddallabenetta/omp-web@main` into this fork.
+
+            The fork keeps its own changes on top of upstream's, so this PR is
+            where an upstream release reaches the fork. CI (typecheck and
+            build) runs before it merges.
+
+            If the merge conflicts, resolve it here or on the branch.
