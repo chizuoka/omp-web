@@ -69,6 +69,125 @@ installed directory's `.env` after the install (step 4).
 `npm update -g omp-web` (or `bun upgrade omp-web`) pulls upstream's `0.5.1`
 from the registry and overwrites the fork — reinstall from the tarball.
 
+## Running it as a service (Linux / WSL, systemd, port 30142)
+
+Verified on WSL2 with `systemd=true` in `/etc/wsl.conf`. The launcher reads its
+port from the **process** environment (`PORT`, default `30141`) — not from the
+installed `.env` — so the port and the other settings live in an
+`EnvironmentFile` owned by a systemd *user* unit. `PORT` is deliberately not
+exported in `~/.profile`: many other tools read it.
+
+### Quick start / stop
+
+```bash
+systemctl --user start omp-web      # start
+systemctl --user stop omp-web       # stop
+systemctl --user restart omp-web    # after reinstalling the tarball or editing the env file
+systemctl --user status omp-web     # state + last log lines
+journalctl --user -u omp-web -f     # follow logs
+```
+
+Foreground one-off instead of the service (stop the service first if the port
+is the same):
+
+```bash
+PORT=30142 OMP_WEB_NO_OPEN=1 omp-web
+omp-web -p 30142 --no-open          # same thing with flags
+```
+
+### One-time setup
+
+1. Create the env file (mode `0600`; it holds the password):
+
+   ```bash
+   mkdir -p ~/.config/omp-web ~/.config/systemd/user
+   umask 077
+   cat > ~/.config/omp-web/env <<EOF
+   PORT=30142
+   OMP_WEB_NO_OPEN=1
+   OMP_WEB_AUTHENTICATED=1
+   OMP_WEB_ALLOWED_HOSTS=chi-pi.aitecl.com,chisunway-pi.aitecl.com,chisunway-pi-au.aitecl.com
+   OMP_WEB_PASSWORD=$(head -c 24 /dev/urandom | base64 | tr -d '/+=' | head -c 28)
+   EOF
+   chmod 600 ~/.config/omp-web/env
+   ```
+
+   | Variable | Meaning |
+   | --- | --- |
+   | `PORT` | Listen port (launcher default is `30141`). |
+   | `OMP_WEB_NO_OPEN` | Do not try to open a browser (there is none under systemd). |
+   | `OMP_WEB_AUTHENTICATED` | Turn on the HTTP Basic Auth lock. Required behind a tunnel. |
+   | `OMP_WEB_PASSWORD` | The password (user name is always `omp`). See [authentication.md](authentication.md). |
+   | `OMP_WEB_ALLOWED_HOSTS` | Comma-separated `Host` values accepted by the server; add every public hostname. |
+   | `OMP_WEB_HOSTNAME` | Bind address, default `127.0.0.1`. Leave it on loopback when a tunnel runs on the same host. |
+
+   Read the password later with `grep OMP_WEB_PASSWORD ~/.config/omp-web/env`.
+
+2. Create the unit `~/.config/systemd/user/omp-web.service`:
+
+   ```ini
+   [Unit]
+   Description=omp-web (fork) on port 30142
+   After=network.target
+
+   [Service]
+   EnvironmentFile=%h/.config/omp-web/env
+   Environment=PATH=%h/.local/bin:/usr/local/bin:/usr/bin:/bin
+   ExecStart=%h/.local/bin/omp-web
+   Restart=on-failure
+   RestartSec=5
+
+   [Install]
+   WantedBy=default.target
+   ```
+
+   `ExecStart` must be the launcher that `which omp-web` prints, and the `PATH`
+   line must contain the directory with `node` and `bun`.
+
+3. Enable and start it, and keep user services alive without a login session:
+
+   ```bash
+   systemctl --user daemon-reload
+   systemctl --user enable --now omp-web
+   loginctl enable-linger "$USER"      # starts the service at boot, not at first login
+   ```
+
+4. Check it (expect `401` without credentials, `200` with):
+
+   ```bash
+   curl -s -o /dev/null -w '%{http_code}\n' http://127.0.0.1:30142/
+   . ~/.config/omp-web/env
+   curl -s -o /dev/null -w '%{http_code}\n' -u "omp:$OMP_WEB_PASSWORD" http://127.0.0.1:30142/
+   ```
+
+### Cloudflare tunnel
+
+The tunnel connector can run on the Windows host while omp-web runs in WSL:
+WSL2 forwards `localhost`, so Windows reaches the service at
+`http://localhost:30142` (verify with `curl.exe -s -o NUL -w "%{http_code}" http://localhost:30142/`
+from Windows; `401` means reachable).
+
+A tunnel started with `cloudflared tunnel run --token ...` is *remotely
+managed*: its routes live in the Cloudflare dashboard, not in a local file.
+Zero Trust → Networks → Tunnels → your tunnel → **Public hostname** → add:
+
+| Field | Value |
+| --- | --- |
+| Hostname | `chisunway-pi-au.aitecl.com` |
+| Service | `http://localhost:30142` |
+
+Cloudflare creates the DNS record. The hostname must also be in
+`OMP_WEB_ALLOWED_HOSTS`, otherwise the server rejects the request. Never expose
+the port through a tunnel with `OMP_WEB_AUTHENTICATED` off.
+
+Treat the tunnel token as a secret: it is visible in the Windows service's
+command line (`sc qc Cloudflared`), so avoid pasting that output anywhere.
+
+### After a reinstall or rebuild
+
+The env file and unit live outside the package, so they survive
+`npm install -g <tarball>`. Just `systemctl --user restart omp-web`.
+
 ## Windows / bun
 
 Verified end-to-end on Windows (bun 1.4.4) against the global install at
